@@ -51,7 +51,7 @@ class Database(object):
                             'Attempting to add duplicate entry %s to database' % var)
                     self.table[var] = ncfile
 
-        except err:
+        except Exception as err:
             self.close()
             raise err
 
