@@ -1,4 +1,5 @@
 import netCDF4 as nc
+import collections.abc
 import numpy as np
 import os
 
@@ -26,14 +27,17 @@ class Database(object):
 
         Parameters
         ----------
-        files_to_vars: dict-like (str -> list of str)
+        files_to_vars: dict-like (str -> list of str or dict-like)
             Mapping from file paths to variable names. Files
             paths must point to netCDF files that contain
             each variable in the corresponding list; if not,
-            an exception will be raised
+            an exception will be raised. Duplicate variable names 
+            can be handled by passing dictionaries that map keys used 
+            for lookup to variable names.
         """
 
         self.table = dict()
+        self.key_to_var = dict()
         
         # Try block catches exceptions in order to close
         # already-opened files before re-raising them
@@ -41,15 +45,29 @@ class Database(object):
             for path, var_list in files_to_vars.items():
                 ncfile = nc.Dataset(path, 'r')
                 for var in var_list:
+                    
+                    # Update key-to-variable mapping
+                    if isinstance(var, collections.abc.Mapping):
+                        items = var.items()
+                        if len(items) != 1:
+                            ncfile.close()
+                            raise ValueError(
+                                'Key-to-variable mappings must contain a single item')
+                        key, var = list(items)[0]
+                    else:
+                        key = var
+                    if key in self.key_to_var.keys():
+                        ncfile.close()
+                        raise ValueError(
+                            f'Key {key} already present in database')
+                    self.key_to_var[key] = var
+
+                    # Update variable-to-file mapping
                     if not var in ncfile.variables.keys():
                         ncfile.close()
                         raise ValueError(
                             'NetCDF file at %s does not contain variable %s' % (path, var))
-                    if var in self.table.keys():
-                        ncfile.close()
-                        raise ValueError(
-                            'Attempting to add duplicate entry %s to database' % var)
-                    self.table[var] = ncfile
+                    self.table[key] = ncfile
 
         except Exception as err:
             self.close()
@@ -59,19 +77,19 @@ class Database(object):
         """
         Close all file handles stored in the database
         """
-        for var, ncfile in self.table.items():
+        for key, ncfile in self.table.items():
             if ncfile.isopen():
                 ncfile.close()
 
-    def lookup(self, var):
+    def lookup(self, key):
         """
         Look up and return a variable from a NetCDF file in the database
 
-        self[var] can be used as a shortcut for self.lookup(var)
+        self[key] can be used as a shortcut for self.lookup(key)
 
         Parameters
         ----------
-        var: str
+        key: str
             Variable key
 
         Returns
@@ -79,7 +97,8 @@ class Database(object):
         netCDF4.Variable
             NetCDF variable corresponding to the provided key
         """
-        return self.table[var].variables[var]
+        var = self.key_to_var[key]
+        return self.table[key].variables[var]
 
     def files(self):
         """
@@ -91,12 +110,13 @@ class Database(object):
                 files.append(ncfile.filepath())
         return files
 
-    def coordinates(self, var):
+    def coordinates(self, key):
         """
         Return a dict mapping the names of a variable's dimensions to the underlying
         netCDF coordinates (or None, if the dimension is unlabeled).
         """
-        dset = self.table[var]
+        var = self.key_to_var[key]
+        dset = self.table[key]
         dimensions = dset.variables[var].dimensions
         coords = dict(zip(
             dimensions, 
@@ -104,13 +124,14 @@ class Database(object):
         ))
         return coords
 
-    def __getitem__(self, var):
-        return self.lookup(var)
+    def __getitem__(self, key):
+        return self.lookup(key)
 
     def __str__(self):
         summary = "<class 'quicknc.Database'>"
-        for var, ncfile in self.table.items():
-            summary += '\n%s: %s' % (var, self[var].__str__())
+        for key, ncfile in self.table.items():
+            var = self.key_to_var[key]
+            summary += '\n%s -> %s: %s' % (key, var, self[key].__str__())
         return summary
 
 def create(path, file_metadata):
